@@ -1,29 +1,1087 @@
 ---
-title: "EDA"
-output: html_document
-date: "2026-05-28"
+title: "CA-0514: Temas Avanzados de Seguros"
+subtitle: "Análisis Exploratorio de Datos"
+author:
+  - "Sofía Bocker Brenes - C11102"
+  - "Anthony Jiménez Navarro - C24067"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+    df_print: paged
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+# Librerías
+
+```{r}
+library(tidyverse)   
+library(lubridate)   
+library(readxl) 
+library(readr)
+library(janitor)     
+library(scales)      
+library(knitr)       
+library(kableExtra)  
 ```
 
-## R Markdown
+# Análisis Exploratorio de Datos (AED)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Carga de datos
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r}
+df <- read_delim(
+  "Data/Motor vehicle insurance data(2).csv",
+  delim = ";",
+  locale = locale(decimal_mark = ".", grouping_mark = ","),
+  show_col_types = FALSE
+) |>
+  clean_names()
 
-```{r cars}
-summary(cars)
+# Muestra de reclamos por tipo
+claims_sample <- read_delim(
+  "Data/sample type claim(2).csv",
+  delim = ";",
+  show_col_types = FALSE
+) |>
+  clean_names()
 ```
 
-## Including Plots
+```{r}
+# Dimensiones de la base principal
+cat("Dimensiones:", nrow(df), "filas x", ncol(df), "columnas\n")
 
-You can also embed plots, for example:
+# Nombres de columnas
+names(df)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+# Estructura de variables
+glimpse(df)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Valores faltantes
+
+```{r}
+# Conteo de NA por variable
+faltantes <- df |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_faltantes") |>
+  mutate(pct = round(n_faltantes / nrow(df) * 100, 2)) |>
+  filter(n_faltantes > 0) |>
+  arrange(desc(n_faltantes))
+
+faltantes |>
+  kable(
+    caption = "Variables con valores faltantes",
+    col.names = c("Variable", "N faltantes", "% faltantes")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Duplicados por ID
+
+```{r}
+# Cada fila representa una póliza en un periodo anual
+# Un mismo ID puede aparecer en múltiples periodos
+n_ids_unicos <- n_distinct(df$id)
+n_filas_totales <- nrow(df)
+
+cat("IDs únicos:", n_ids_unicos, "\n")
+cat("Filas totales:", n_filas_totales, "\n")
+cat("Promedio de periodos por ID:", round(n_filas_totales / n_ids_unicos, 2), "\n")
+```
+
+## Resumen estadístico
+
+```{r}
+# Resumen de variables numéricas clave
+df |>
+  select(premium, cost_claims_year, n_claims_year, n_claims_history,
+         power, value_vehicle, cylinder_capacity, weight, seniority) |>
+  summary()
+```
+
+## Transformación de variables
+
+```{r}
+# Convertir fechas (formato DD/MM/YYYY)
+df <- df |>
+  mutate(
+    date_birth = dmy(date_birth),
+    date_driving_licence = dmy(date_driving_licence),
+    date_last_renewal = dmy(date_last_renewal),
+    date_next_renewal = dmy(date_next_renewal),
+    date_start_contract = dmy(date_start_contract)
+  )
+```
+
+
+```{r}
+df <- df |>
+  mutate(
+    # Edad del asegurado al momento de la última renovación
+    edad_asegurado = as.integer(
+      interval(date_birth, date_last_renewal) / years(1)
+    ),
+
+    # Años de experiencia de conducción a la última renovación
+    experiencia_conduccion = as.integer(
+      interval(date_driving_licence, date_last_renewal) / years(1)
+    ),
+
+    # Antigüedad del vehículo (en años respecto al año de renovación)
+    anio_renovacion = year(date_last_renewal),
+    antiguedad_vehiculo = anio_renovacion - year_matriculation,
+    
+    # Indicador de siniestro en el año
+    claim_flag = as.integer(n_claims_year > 0),
+
+    # Grupos de edad del asegurado
+    grupo_edad = cut(
+      edad_asegurado,
+      breaks = c(-Inf, 25, 35, 45, 55, 65, Inf),
+      labels = c("≤25", "26-35", "36-45", "46-55", "56-65", ">65"),
+      right = TRUE
+    ),
+
+    # Grupos de experiencia de conducción
+    grupo_experiencia = cut(
+      experiencia_conduccion,
+      breaks = c(-Inf, 2, 5, 10, 20, Inf),
+      labels = c("≤2 años", "3-5 años", "6-10 años", "11-20 años", ">20 años"),
+      right = TRUE
+    ),
+
+    # Grupos de valor del vehículo (al 31/12/2019)
+    grupo_valor_vehiculo = cut(
+      value_vehicle,
+      breaks = quantile(value_vehicle, probs = c(0, 0.25, 0.5, 0.75, 1),
+                        na.rm = TRUE),
+      labels = c("Bajo", "Medio-bajo", "Medio-alto", "Alto"),
+      include.lowest = TRUE
+    ),
+
+    # Grupos de potencia del vehículo
+    grupo_potencia = cut(
+      power,
+      breaks = c(-Inf, 75, 100, 150, Inf),
+      labels = c("Baja (≤75)", "Media (76-100)", "Alta (101-150)", "Muy alta (>150)"),
+      right = TRUE
+    ),
+
+    # Recodificación de variables categóricas
+    area_label = factor(area, labels = c("Rural", "Urbana")), # 0 for rural and 1 for urban (more than 30,000 inhabitants) in terms of traffic conditions.
+    type_risk = factor(type_risk), # 1 for motorbikes, 2 for vans, 3 for passenger cars and 4 for agricultural vehicles
+    type_fuel = factor(type_fuel), # Petrol (P) or Diesel (D).
+    distribution_channel = factor(distribution_channel) # 0 for Agent and 1 for Insurance brokers.
+  )
+```
+
+## Exploración del portafolio
+
+### Distribución por tipo de riesgo
+
+Type of risk associated with the policy. Each value corresponds to a specific risk type: 1 for motorbikes, 2 for vans, 3 for passenger cars and 4 for agricultural vehicles
+
+```{r}
+df |>
+  count(type_risk) |>
+  mutate(pct = n / sum(n)) |>
+  kable(
+    caption = "Distribución por tipo de riesgo",
+    col.names = c("Tipo de riesgo", "N pólizas", "Proporción"),
+    digits = 3
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r}
+df |>
+  count(type_risk) |>
+  ggplot(aes(x = type_risk, y = n, fill = type_risk)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = comma(n)), vjust = -0.4, size = 3.5) +
+  scale_y_continuous(labels = comma) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(
+    title = "Distribución del portafolio por tipo de riesgo",
+    x = "Tipo de riesgo",
+    y = "Número de pólizas"
+  ) +
+  theme_minimal()
+```
+
+### Distribución por zona (urbana / rural)
+
+Dichotomous variable indicates the area. 0 for rural and 1 for urban (more than 30,000 inhabitants) in terms of traffic conditions.
+
+```{r}
+df |>
+  count(area_label) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  kable(
+    caption = "Distribución por zona geográfica",
+    col.names = c("Zona", "N pólizas", "% del portafolio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+df |>
+  count(area_label) |>
+  ggplot(aes(x = area_label, y = n, fill = area_label)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = comma(n)), vjust = -0.4) +
+  scale_y_continuous(labels = comma) +
+  scale_fill_manual(values = c("#D81F1C", "#FA9E50")) +
+  labs(title = "Distribución por zona geográfica",
+       x = "Zona", y = "Número de pólizas") +
+  theme_minimal()
+```
+
+### Distribución por canal de distribución
+
+Classifies the channel through which the policy was contracted. 0 for Agent and 1 for Insurance brokers.
+
+```{r}
+df |>
+  count(distribution_channel) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  kable(
+    caption = "Distribución por canal de distribución",
+    col.names = c("Canal", "N pólizas", "% del portafolio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Distribución por tipo de combustible
+
+Specific kind of energy source used to power a vehicle. Petrol (P) or Diesel (D).
+
+```{r}
+df |>
+  count(type_fuel) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  kable(
+    caption = "Distribución por tipo de combustible",
+    col.names = c("Combustible", "N pólizas", "% del portafolio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+df |>
+  count(type_fuel) |>
+  ggplot(aes(x = reorder(type_fuel, -n), y = n, fill = type_fuel)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = comma(n)), vjust = -0.4, size = 3.5) +
+  scale_y_continuous(labels = comma) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(title = "Distribución por tipo de combustible",
+       x = "Tipo de combustible", y = "Número de pólizas") +
+  theme_minimal()
+```
+
+### Distribución de edad del asegurado
+
+```{r}
+df |>
+  filter(!is.na(edad_asegurado)) |>
+  ggplot(aes(x = edad_asegurado)) +
+  geom_histogram(bins = 40, fill = "#FA9E50", color = "white", alpha = 0.85) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución de edad del asegurado (al momento de la última renovación)",
+    x = "Edad (años)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+df |>
+  count(grupo_edad) |>
+  filter(!is.na(grupo_edad)) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  kable(
+    caption = "Distribución por grupo de edad",
+    col.names = c("Grupo de edad", "N pólizas", "% del portafolio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Distribución de experiencia de conducción
+
+```{r}
+df |>
+  filter(!is.na(experiencia_conduccion), experiencia_conduccion >= 0) |>
+  ggplot(aes(x = experiencia_conduccion)) +
+  geom_histogram(bins = 40, fill = "#619DC4", color = "white", alpha = 0.85) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución de experiencia de conducción",
+    x = "Años de experiencia",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+### Distribución de antigüedad del vehículo
+
+```{r}
+df |>
+  filter(!is.na(antiguedad_vehiculo), antiguedad_vehiculo >= 0) |>
+  ggplot(aes(x = antiguedad_vehiculo)) +
+  geom_histogram(bins = 35, fill = "#365FA5", color = "white", alpha = 0.85) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución de antigüedad del vehículo",
+    x = "Antigüedad (años)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+### Distribución de primas
+
+```{r}
+summary_prima <- df |>
+  summarise(
+    Min = min(premium, na.rm = TRUE),
+    P25 = quantile(premium, 0.25, na.rm = TRUE),
+    Media = mean(premium, na.rm = TRUE),
+    Mediana = median(premium, na.rm = TRUE),
+    P75 = quantile(premium, 0.75, na.rm = TRUE),
+    P95 = quantile(premium, 0.95, na.rm = TRUE),
+    Max = max(premium, na.rm = TRUE)
+  )
+
+summary_prima |>
+  kable(caption = "Resumen estadístico de primas", digits = 2) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Distribución excluyendo el percentil 99
+df |>
+  filter(premium > 0, premium < quantile(premium, 0.99, na.rm = TRUE)) |>
+  ggplot(aes(x = premium)) +
+  geom_histogram(bins = 50, fill = "#D81F1C", color = "white", alpha = 0.85) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución de primas (excluye percentil 99 para visualización)",
+    x = "Prima (unidades monetarias)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+# Dsitribución utilizanda escala log
+df |>
+  filter(premium > 0) |>
+  ggplot(aes(x = premium)) +
+  geom_histogram(bins = 50, fill = "#D81F1C", color = "white", alpha = 0.85) +
+  scale_x_log10(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución de primas (escala logarítmica)",
+    x = "Prima (escala log)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+## Exploración de siniestros
+
+### Proporción de pólizas con y sin siniestro
+
+```{r}
+df |>
+  count(claim_flag) |>
+  mutate(
+    estado = if_else(claim_flag == 1, "Con siniestro", "Sin siniestro"),
+    pct = percent(n / sum(n), accuracy = 0.1)
+  ) |>
+  select(estado, n, pct) |>
+  kable(
+    caption = "Pólizas con y sin siniestro en el año",
+    col.names = c("Estado", "N pólizas", "% del portafolio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+df |>
+  count(claim_flag) |>
+  mutate(estado = if_else(claim_flag == 1, "Con siniestro", "Sin siniestro")) |>
+  ggplot(aes(x = estado, y = n, fill = estado)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = comma(n)), vjust = -0.4) +
+  scale_fill_manual(values = c("#EE5733", "#619DC4")) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Pólizas con y sin siniestro", x = NULL, y = "Número de pólizas") +
+  theme_minimal()
+
+```
+
+### Distribución del número de siniestros por año
+
+```{r}
+df |>
+  count(n_claims_year) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.01)) |>
+  kable(
+    caption = "Distribución del número de siniestros por póliza-año",
+    col.names = c("N siniestros", "N pólizas", "% del total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Distribución del costo de siniestros
+
+```{r}
+# Toda la base (incluye ceros)
+df |>
+  ggplot(aes(x = cost_claims_year)) +
+  geom_histogram(bins = 60, fill = "#619DC4", color = "white", alpha = 0.85) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución del costo de siniestros (todas las pólizas, incluye ceros)",
+    x = "Costo de siniestros",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+### Distribución del costo - solo pólizas con siniestro
+
+```{r}
+df_con_siniestro <- df |> filter(claim_flag == 1)
+
+df_con_siniestro |>
+  ggplot(aes(x = cost_claims_year)) +
+  geom_histogram(bins = 60, fill = "#365FA5", color = "white", alpha = 0.85) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución del costo de siniestros (solo pólizas con siniestro)",
+    x = "Costo de siniestros",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+# Escala logarítmica
+df_con_siniestro |>
+  filter(cost_claims_year > 0) |>
+  ggplot(aes(x = log1p(cost_claims_year))) +
+  geom_histogram(bins = 60, fill = "#365FA5", color = "white", alpha = 0.85) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribución del costo de siniestros - escala log",
+    x = "log",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+### Análisis de valores extremos (outliers)
+
+```{r}
+# Se identifican los percentiles clave sin eliminar datos
+cuantiles_costo <- df_con_siniestro |>
+  summarise(
+    P75 = quantile(cost_claims_year, 0.75, na.rm = TRUE),
+    P90 = quantile(cost_claims_year, 0.90, na.rm = TRUE),
+    P95 = quantile(cost_claims_year, 0.95, na.rm = TRUE),
+    P99 = quantile(cost_claims_year, 0.99, na.rm = TRUE),
+    P999 = quantile(cost_claims_year, 0.999, na.rm = TRUE),
+    Max = max(cost_claims_year, na.rm = TRUE)
+  )
+
+cuantiles_costo |>
+  kable(
+    caption = "Percentiles del costo de siniestros (pólizas con siniestro)",
+    digits = 2
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Tablas
+
+```{r}
+# Función reutilizable para calcular métricas para las tablas
+resumen_actuarial <- function(data, ...) {
+  data |>
+    group_by(...) |>
+    summarise(
+      n_polizas = n(),
+      prima_promedio = round(mean(premium, na.rm = TRUE), 2),
+      prima_total = round(sum(premium, na.rm = TRUE), 0),
+      n_siniestros_total = sum(n_claims_year, na.rm = TRUE),
+      costo_total = round(sum(cost_claims_year, na.rm = TRUE), 0),
+      .groups = "drop"
+    )
+}
+```
+
+### Por tipo de riesgo
+
+```{r}
+resumen_actuarial(df, type_risk) |>
+  kable(
+    caption = "Métricas por tipo de riesgo",
+    col.names = c("Tipo riesgo", "N pólizas", "Prima prom.", "Prima total",
+                  "N siniestros", "Costo total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = TRUE, font_size = 12)
+```
+
+### Por zona geográfica
+
+```{r}
+resumen_actuarial(df, area_label) |>
+  kable(
+    caption = "Métricas por zona geográfica",
+    col.names = c("Zona", "N pólizas", "Prima prom.", "Prima total",
+                  "N siniestros", "Costo total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Por grupo de edad del asegurado
+
+```{r}
+resumen_actuarial(df |> filter(!is.na(grupo_edad)), grupo_edad) |>
+  kable(
+    caption = "Métricas por grupo de edad",
+    col.names = c("Grupo edad", "N pólizas", "Prima prom.", "Prima total",
+                  "N siniestros", "Costo total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE)
+```
+
+### Por grupo de valor del vehículo
+
+```{r}
+resumen_actuarial(df |> filter(!is.na(grupo_valor_vehiculo)), grupo_valor_vehiculo) |>
+  kable(
+    caption = "Métricas por grupo de valor del vehículo",
+    col.names = c("Grupo valor", "N pólizas", "Prima prom.", "Prima total",
+                  "N siniestros", "Costo total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Por grupo de potencia del vehículo
+
+```{r}
+resumen_actuarial(df |> filter(!is.na(grupo_potencia)), grupo_potencia) |>
+  kable(
+    caption = "Métricas por grupo de potencia",
+    col.names = c("Grupo potencia", "N pólizas", "Prima prom.", "Prima total",
+                  "N siniestros", "Costo total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Boxplot del costo de siniestros por tipo de riesgo (escala logarítmica)
+
+```{r}
+df |>
+  filter(claim_flag == 1, cost_claims_year > 0) |>
+  ggplot(aes(x = type_risk, y = cost_claims_year, fill = type_risk)) +
+  geom_boxplot(outlier.shape = 21, outlier.alpha = 0.3, show.legend = FALSE) +
+  scale_y_log10(labels = comma) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(
+    title = "Distribución del costo de siniestros por tipo de riesgo",
+    subtitle = "Solo pólizas con siniestro",
+    x = "Tipo de riesgo",
+    y = "Costo de siniestros (log)"
+  ) +
+  theme_minimal()
+```
+
+## Exploración de la muestra de reclamos por tipo
+
+```{r}
+# Resumen por tipo de reclamo
+resumen_claims <- claims_sample |>
+  group_by(claims_type) |>
+  summarise(
+    n_reclamos = n(),
+    costo_total = round(sum(cost_claims_by_type, na.rm = TRUE), 2),
+    costo_promedio = round(mean(cost_claims_by_type, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) |>
+  arrange(desc(costo_total))
+
+resumen_claims |>
+  kable(
+    caption = "Resumen de reclamos por tipo (muestra)",
+    col.names = c("Tipo de reclamo", "N reclamos", "Costo total", "Costo promedio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r}
+resumen_claims |>
+  ggplot(aes(x = reorder(claims_type, costo_promedio), y = costo_promedio,
+             fill = claims_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = comma(round(costo_promedio, 0))),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_x_discrete(labels = \(x) str_to_title(x)) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(
+    title = "Costo promedio por tipo de reclamo (muestra)",
+    x = "Tipo de reclamo",
+    y = "Costo promedio"
+  ) +
+  theme_minimal()
+```
+
+# Base Integrada: Análisis Detallado por Tipo de Reclamo
+
+Problema con un join directo: si se hace `inner_join(df, claims_sample, by = "id")` sin preprocesamiento, cada fila de la base principal se multiplicaría por el número de tipos de reclamo del ID correspondiente, generando duplicados.
+
+## Construcción de la base integrada 
+
+### Referencia de costo total por ID en la muestra
+
+```{r}
+# Extraer el Cost_claims_year de referencia por ID (es el mismo para todas las filas de un ID en la muestra, se usa para anclar el join al periodo correcto)
+ref_costo_sample <- claims_sample |>
+  group_by(id) |>
+  summarise(
+    cost_claims_year_ref = first(cost_claims_year), # mismo valor para todas las filas
+    .groups = "drop"
+  )
+
+cat("IDs únicos en la muestra de reclamos:", nrow(ref_costo_sample), "\n")
+```
+
+### Tabla agregada de métricas por ID
+
+```{r}
+# Agregar la muestra: una fila por ID con resumen de sus tipos de reclamo
+agg_sample <- claims_sample |>
+  group_by(id) |>
+  summarise(
+    n_tipos_reclamo = n_distinct(claims_type),
+    costo_total_detallado = round(sum(cost_claims_by_type, na.rm = TRUE), 2),
+    costo_prom_detallado = round(mean(cost_claims_by_type, na.rm = TRUE), 2),
+    # Tipo de reclamo con mayor costo para este ID
+    tipo_principal = claims_type[which.max(cost_claims_by_type)],
+    .groups = "drop"
+  ) |>
+  # Incorporar la referencia de costo para el join
+  left_join(ref_costo_sample, by = "id")
+```
+
+### Indicadores de costo por tipo de reclamo (formato ancho)
+
+```{r}
+# Pivotear a formato ancho: una columna por tipo de reclamo con su costo
+tipos_wide <- claims_sample |>
+  group_by(id, claims_type) |>
+  summarise(costo_tipo = sum(cost_claims_by_type, na.rm = TRUE), .groups = "drop") |>
+  pivot_wider(
+    names_from = claims_type,
+    values_from = costo_tipo,
+    values_fill = 0,
+    names_prefix = "costo_"
+  ) |>
+  clean_names() # Normaliza nombres (reemplaza espacios y caracteres especiales)
+
+# Agregar los indicadores al resumen
+agg_sample <- agg_sample |>
+  left_join(tipos_wide, by = "id")
+```
+
+### Join con la base principal
+
+```{r}
+# Join en id + cost_claims_year para anclar al periodo correcto del panel
+# Se usa inner_join: solo se conservan pólizas con info detallada disponible
+df_integrada <- df |>
+  inner_join(
+    agg_sample |> rename(cost_claims_year = cost_claims_year_ref),
+    by = c("id", "cost_claims_year")
+  ) |>
+  # Paso de resolución: si un ID tuvo el mismo cost_claims_year en dos años distintos, el join devuelve dos filas. Se conserva la renovación más reciente
+  slice_max(date_last_renewal, n = 1, by = id, with_ties = FALSE)
+
+cat("Dimensiones de la base integrada:", nrow(df_integrada),
+    "filas x", ncol(df_integrada), "columnas\n")
+```
+
+## Exploración de tipos de reclamo
+
+### Distribución general de tipos de reclamo en la muestra
+
+```{r}
+claims_sample |>
+  count(claims_type, sort = TRUE) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  kable(
+    caption = "Distribución de tipos de reclamo (muestra)",
+    col.names = c("Tipo de reclamo", "N reclamos", "% del total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+claims_sample |>
+  count(claims_type, sort = TRUE) |>
+  ggplot(aes(x = reorder(claims_type, n), y = n, fill = claims_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = comma(n)), hjust = -0.15, size = 3.5) +
+  coord_flip() +
+  scale_x_discrete(labels = \(x) str_to_title(x)) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(
+    title = "Número de reclamos por tipo (muestra detallada)",
+    x = "Tipo de reclamo",
+    y = "N reclamos"
+  ) +
+  theme_minimal()
+```
+
+### Costo total y promedio por tipo de reclamo
+
+```{r}
+claims_sample |>
+  group_by(claims_type) |>
+  summarise(
+    n_reclamos = n(),
+    costo_total = round(sum(cost_claims_by_type, na.rm = TRUE), 0),
+    costo_promedio = round(mean(cost_claims_by_type, na.rm = TRUE), 2),
+    costo_mediana = round(median(cost_claims_by_type, na.rm = TRUE), 2),
+    costo_max = round(max(cost_claims_by_type, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) |>
+  arrange(desc(costo_total)) |>
+  kable(
+    caption = "Métricas de costo por tipo de reclamo",
+    col.names = c("Tipo", "N reclamos", "Costo total", "Costo prom.",
+                  "Mediana", "Costo máx.")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Distribución de costos por tipo (boxplot logarítmico)
+
+```{r}
+claims_sample |>
+  filter(cost_claims_by_type > 0) |>
+  ggplot(aes(x = reorder(claims_type, cost_claims_by_type, FUN = median),
+             y = cost_claims_by_type,
+             fill = claims_type)) +
+  geom_boxplot(outlier.shape = 21, outlier.alpha = 0.4, show.legend = FALSE) +
+  scale_y_log10(labels = comma) +
+  scale_x_discrete(labels = \(x) str_to_title(x)) +
+  coord_flip() +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(
+    title = "Distribución del costo por tipo de reclamo (escala log)",
+    subtitle = "Ordenado por mediana del costo",
+    x = "Tipo de reclamo",
+    y = "Costo (log)"
+  ) +
+  theme_minimal()
+```
+
+### Composición de tipos de reclamo por tipo de vehículo
+
+```{r}
+# Para este análisis se cruza la muestra con la base integrada
+df_integrada |>
+  select(id, type_risk) |>
+  inner_join(claims_sample, by = "id") |>
+  count(type_risk, claims_type) |>
+  group_by(type_risk) |>
+  mutate(pct = n / sum(n)) |>
+  ungroup() |>
+  kable(
+    caption = "Distribución de tipos de reclamo por tipo de riesgo (muestra)",
+    col.names = c("Tipo riesgo", "Tipo reclamo", "N reclamos", "% dentro del tipo"),
+    digits = 3
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Exploración de la base integrada 
+
+### Resumen descriptivo de la base integrada
+
+```{r}
+cat("Pólizas en la base integrada:", nrow(df_integrada), "\n")
+cat("IDs únicos:", n_distinct(df_integrada$id), "\n")
+cat("Tipos de reclamo representados:", n_distinct(claims_sample$claims_type), "\n")
+
+# Métricas de la base integrada
+df_integrada |>
+  summarise(
+    prima_total = sum(premium, na.rm = TRUE),
+    costo_total = sum(cost_claims_year, na.rm = TRUE),
+    n_siniestros_total = sum(n_claims_year, na.rm = TRUE),
+    n_tipos_prom = round(mean(n_tipos_reclamo, na.rm = TRUE), 2)
+  ) |>
+  pivot_longer(everything(), names_to = "Métrica", values_to = "Valor") |>
+  kable(caption = "Resumen actuarial de la base integrada", digits = 4) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Número de tipos de reclamo por póliza
+
+```{r}
+df_integrada |>
+  count(n_tipos_reclamo) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  kable(
+    caption = "Distribución del número de tipos de reclamo por póliza",
+    col.names = c("N tipos de reclamo", "N pólizas", "% del total")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Tipo de reclamo principal por tipo de vehículo
+
+```{r}
+df_integrada |>
+  count(type_risk, tipo_principal) |>
+  group_by(type_risk) |>
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) |>
+  ungroup() |>
+  arrange(type_risk, desc(n)) |>
+  kable(
+    caption = "Tipo de reclamo principal por tipo de riesgo",
+    col.names = c("Tipo riesgo", "Tipo principal", "N pólizas", "% dentro del tipo")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Métricas por tipo de riesgo - base integrada
+
+```{r}
+df_integrada |>
+  group_by(type_risk) |>
+  summarise(
+    n_polizas = n(),
+    prima_prom = round(mean(premium, na.rm = TRUE), 2),
+    costo_prom = round(mean(cost_claims_year, na.rm = TRUE), 2),
+    n_tipos_prom = round(mean(n_tipos_reclamo, na.rm = TRUE), 2),
+    costo_gran_prom = round(mean(costo_total_detallado, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) |>
+  kable(
+    caption = "Métricas de la base integrada por tipo de riesgo",
+    col.names = c("Tipo riesgo", "N pólizas", "Prima prom.", "Costo prom.", "N tipos reclamo prom.", "Costo detallado prom.")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Métricas por zona geográfica - base integrada
+
+```{r}
+df_integrada |>
+  group_by(area_label) |>
+  summarise(
+    n_polizas = n(),
+    n_tipos_prom = round(mean(n_tipos_reclamo, na.rm = TRUE), 2),
+    costo_gran_prom = round(mean(costo_total_detallado, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) |>
+  kable(
+    caption = "Métricas de la base integrada por zona geográfica",
+    col.names = c("Zona", "N pólizas",
+                  "N tipos reclamo prom.", "Costo detallado prom.")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Métricas por grupo de edad - base integrada
+
+```{r}
+df_integrada |>
+  filter(!is.na(grupo_edad)) |>
+  group_by(grupo_edad) |>
+  summarise(
+    n_polizas = n(),
+    n_tipos_prom = round(mean(n_tipos_reclamo, na.rm = TRUE), 2),
+    costo_gran_prom = round(mean(costo_total_detallado, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) |>
+  kable(
+    caption = "Métricas de la base integrada por grupo de edad",
+    col.names = c("Grupo edad", "N pólizas",
+                  "N tipos reclamo prom.", "Costo detallado prom.")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Métricas por grupo de valor del vehículo - base integrada
+
+```{r}
+df_integrada |>
+  filter(!is.na(grupo_valor_vehiculo)) |>
+  group_by(grupo_valor_vehiculo) |>
+  summarise(
+    n_polizas = n(),
+    n_tipos_prom = round(mean(n_tipos_reclamo, na.rm = TRUE), 2),
+    costo_gran_prom = round(mean(costo_total_detallado, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) |>
+  kable(
+    caption = "Métricas de la base integrada por grupo de valor del vehículo",
+    col.names = c("Grupo valor", "N pólizas",
+                  "N tipos reclamo prom.", "Costo detallado prom.")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Visualizaciones de la base integrada 
+
+### Barras apiladas: tipos de reclamo por tipo de vehículo
+
+```{r}
+df_integrada |>
+  select(id, type_risk) |>
+  inner_join(claims_sample, by = "id") |>
+  count(type_risk, claims_type) |>
+  group_by(type_risk) |>
+  mutate(pct = n / sum(n)) |>
+  ungroup() |>
+  ggplot(aes(x = type_risk, y = pct, fill = str_to_title(claims_type))) +
+  geom_col(position = "stack") +
+  scale_y_continuous(labels = percent) +
+  scale_fill_brewer(palette = "RdYlBu", name = "Tipo de reclamo") +
+  labs(
+    title = "Composición de tipos de reclamo por tipo de vehículo",
+    x = "Tipo de riesgo",
+    y = "Proporción"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 8))
+```
+
+### Costo promedio detallado por tipo de riesgo y tipo de reclamo
+
+```{r}
+df_integrada |>
+  select(id, type_risk) |>
+  inner_join(claims_sample, by = "id") |>
+  group_by(type_risk, claims_type) |>
+  summarise(costo_prom = mean(cost_claims_by_type, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = type_risk, y = costo_prom, fill = str_to_title(claims_type))) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = comma) +
+  scale_fill_brewer(palette = "RdYlBu", name = "Tipo de reclamo") +
+  labs(
+    title = "Costo promedio por tipo de vehículo y tipo de reclamo",
+    x = "Tipo de riesgo",
+    y = "Costo promedio"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 8))
+```
+
+### Distribución logarítmica del costo detallado por tipo de reclamo
+
+```{r}
+claims_sample |>
+  filter(cost_claims_by_type > 0) |>
+  ggplot(aes(x = log1p(cost_claims_by_type), fill = str_to_title(claims_type))) +
+  geom_density(alpha = 0.45) +
+  scale_fill_brewer(palette = "RdYlBu", name = "Tipo de reclamo") +
+  labs(
+    title = "Distribución del costo detallado - escala log",
+    subtitle = "Una curva por tipo de reclamo",
+    x = "log",
+    y = "Densidad"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 8))
+```
+
+```{r}
+claims_sample |>
+  filter(cost_claims_by_type > 0) |>
+  ggplot(aes(x = log1p(cost_claims_by_type))) +
+  geom_density(fill = "#D81F1C", alpha = 0.5, color = "black") +
+  facet_wrap(~ str_to_title(claims_type), scales = "free_y") +
+  labs(
+    title = "Distribución logarítmica del costo por tipo de reclamo",
+    subtitle = "Una distribución por categoría de reclamo",
+    x = "log",
+    y = "Densidad"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold")
+  )
+```
+
+### Heatmap: número de tipos de reclamo por grupo de edad y tipo de riesgo
+
+```{r}
+df_integrada |>
+  filter(!is.na(grupo_edad)) |>
+  group_by(grupo_edad, type_risk) |>
+  summarise(n_tipos_prom = round(mean(n_tipos_reclamo, na.rm = TRUE), 2),
+            .groups = "drop") |>
+  ggplot(aes(x = type_risk, y = grupo_edad, fill = n_tipos_prom)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = n_tipos_prom), size = 3) +
+  scale_fill_gradient(low = "#FFFFB2", high = "#CD1B1E",
+                      name = "N tipos\nprom.") +
+  labs(
+    title = "Heatmap: número promedio de tipos de reclamo por edad y tipo de riesgo",
+    x = "Tipo de riesgo",
+    y = "Grupo de edad"
+  ) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+
+### Boxplot: costo total detallado por grupo de valor del vehículo
+
+```{r}
+df_integrada |>
+  filter(!is.na(grupo_valor_vehiculo), costo_total_detallado > 0) |>
+  ggplot(aes(x = grupo_valor_vehiculo, y = costo_total_detallado,
+             fill = grupo_valor_vehiculo)) +
+  geom_boxplot(outlier.shape = 21, outlier.alpha = 0.4, show.legend = FALSE) +
+  scale_y_log10(labels = comma) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  labs(
+    title = "Costo total detallado por grupo de valor del vehículo",
+    x = "Grupo de valor del vehículo",
+    y = "Costo total detallado (log)"
+  ) +
+  theme_minimal()
+```
+
+### Tipo de reclamo principal por zona geográfica
+
+```{r}
+df_integrada |>
+  count(area_label, tipo_principal) |>
+  group_by(area_label) |>
+  mutate(pct = n / sum(n)) |>
+  ungroup() |>
+  ggplot(aes(x = area_label, y = pct, fill = str_to_title(tipo_principal))) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = percent) +
+  scale_fill_brewer(palette = "RdYlBu", name = "Tipo principal") +
+  labs(
+    title = "Composición del tipo de reclamo principal por zona geográfica",
+    x = "Zona",
+    y = "Proporción"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 8))
+```
+
+
