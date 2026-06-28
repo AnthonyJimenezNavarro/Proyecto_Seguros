@@ -10,7 +10,7 @@ pacman::p_load(
   readr
 )
 
-set.seed(2025)
+set.seed(20260627)
 
 dir.create("../05. Res", showWarnings = FALSE, recursive = TRUE)
 
@@ -93,15 +93,21 @@ claims_resumen <- claims_type |>
   group_by(id) |>
   summarise(
     n_tipos_reclamo = n_distinct(claims_type),
-    costo_detallado = sum(cost_claims_by_type, na.rm = TRUE),
+    costo_total_detallado = sum(cost_claims_by_type, na.rm = TRUE),
+    costo_prom_detallado = mean(cost_claims_by_type, na.rm = TRUE),
     tipo_principal = claims_type[which.max(cost_claims_by_type)],
     .groups = "drop"
+  ) |>
+  mutate(
+    costo_detallado = costo_total_detallado
   )
 
 base_integrada <- base_modelo |>
   left_join(claims_resumen, by = "id") |>
   mutate(
     n_tipos_reclamo = replace_na(n_tipos_reclamo, 0L),
+    costo_total_detallado = replace_na(costo_total_detallado, 0),
+    costo_prom_detallado = replace_na(costo_prom_detallado, 0),
     costo_detallado = replace_na(costo_detallado, 0),
     tipo_principal = replace_na(tipo_principal, "sin reclamo")
   )
